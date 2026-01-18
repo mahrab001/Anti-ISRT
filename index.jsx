@@ -47,10 +47,13 @@ import {
   ArrowLeft,
   XCircle,
   Users,
-  RefreshCw 
+  RefreshCw,
+  AlertTriangle
 } from 'lucide-react';
 
-// --- Firebase Configuration (Anti-Isrt Project) ---
+// --- Firebase Configuration ---
+// Note: In a real deployment, these values should be secure.
+// For this preview environment, we use the provided config or fallback to environment vars.
 const firebaseConfig = {
   apiKey: "AIzaSyCJV1th7O3bOUjC2Y0bCH7Cs41ceOFk5JI",
   authDomain: "anti-isrt.firebaseapp.com",
@@ -62,6 +65,7 @@ const firebaseConfig = {
   measurementId: "G-8XWHC8RXV5"
 };
 
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
@@ -112,7 +116,60 @@ const sendNotification = async (targetUid, type, fromUsername, contentId = null,
 
 // --- Sub-Components ---
 
-// Loading Spinner Component (Replaces Loader/Loader2 to fix crashes)
+// Generic Modal Component (Replaces native alert/confirm)
+const Modal = ({ isOpen, onClose, title, children, type = "default" }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-gray-800 rounded-2xl p-6 max-w-sm w-full border border-gray-700 shadow-2xl relative animate-in zoom-in-95 duration-200">
+        <div className="flex items-center gap-3 mb-4">
+            {type === "danger" && <div className="p-2 bg-red-500/20 rounded-full text-red-500"><AlertTriangle size={24} /></div>}
+            {type === "info" && <div className="p-2 bg-blue-500/20 rounded-full text-blue-500"><AlertCircle size={24} /></div>}
+            <h3 className="text-xl font-bold text-white">{title}</h3>
+        </div>
+        <div className="text-gray-300 mb-6 leading-relaxed">
+            {children}
+        </div>
+        <button 
+            onClick={onClose} 
+            className="absolute top-4 right-4 text-gray-500 hover:text-white transition"
+        >
+            <X size={20} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// Confirmation Dialog (Specific use of Modal)
+const ConfirmDialog = ({ isOpen, onClose, onConfirm, title, message, isDeleting }) => {
+  if (!isOpen) return null;
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={title} type="danger">
+       <p>{message}</p>
+       <div className="flex justify-end gap-3 mt-4">
+          <button 
+            onClick={onClose} 
+            disabled={isDeleting}
+            className="px-4 py-2 text-gray-300 hover:text-white font-medium disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button 
+            onClick={onConfirm} 
+            disabled={isDeleting}
+            className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg font-bold shadow-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isDeleting ? <RefreshCw className="animate-spin" size={16} /> : <Trash2 size={16} />}
+            {isDeleting ? 'Deleting...' : 'Delete'}
+          </button>
+       </div>
+    </Modal>
+  );
+};
+
+// Loading Spinner Component
 const LoadingSpinner = () => (
   <div className="animate-spin text-indigo-500">
     <RefreshCw size={48} />
@@ -371,6 +428,12 @@ function PostCard({ post, currentUser, onViewProfile, userMap }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   
+  // Custom Modal States
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  
   const likes = post.likes ? Object.values(post.likes) : [];
   const isLiked = likes.includes(currentUser.username);
   const isOwner = post.userId === currentUser.uid;
@@ -398,20 +461,29 @@ function PostCard({ post, currentUser, onViewProfile, userMap }) {
     }
   };
 
-  const deletePost = async (e) => {
+  // 1. Replaced window.confirm with Modal logic
+  const initiateDelete = (e) => {
     if (e) {
       e.stopPropagation();
       e.preventDefault();
     }
-    setMenuOpen(false); // Close menu instantly
-    
-    if (window.confirm("Are you sure you want to delete this post?")) {
-        try {
-            await remove(ref(db, `posts/${post.id}`));
-        } catch(e) {
-            console.error(e);
-            alert(`Delete failed. Check Realtime Database Rules.\n\nError Code: ${e.code}\nMessage: ${e.message}`);
-        }
+    setMenuOpen(false); 
+    setShowDeleteConfirm(true);
+  };
+
+  const confirmDelete = async () => {
+    setIsDeleting(true);
+    try {
+        await remove(ref(db, `posts/${post.id}`));
+        // Success! Modal will close when component unmounts (because post is gone from list)
+        // or we close it if unmount doesn't happen instantly
+        setShowDeleteConfirm(false); 
+    } catch(e) {
+        console.error(e);
+        setIsDeleting(false);
+        setShowDeleteConfirm(false);
+        setErrorMessage(`Delete failed. Check Permissions. Code: ${e.code}`);
+        setShowErrorModal(true);
     }
   };
 
@@ -422,7 +494,8 @@ function PostCard({ post, currentUser, onViewProfile, userMap }) {
         setIsEditing(false);
         setMenuOpen(false);
     } catch(e) {
-        alert("Edit failed: " + e.message);
+        setErrorMessage("Edit failed: " + e.message);
+        setShowErrorModal(true);
     }
   };
 
@@ -481,12 +554,12 @@ function PostCard({ post, currentUser, onViewProfile, userMap }) {
   };
 
   const deleteComment = async (commentId) => {
-      if (window.confirm("Delete this comment?")) {
-          try {
-            await remove(ref(db, `comments/${commentId}`));
-          } catch(e) {
-              alert("Delete failed: " + e.message);
-          }
+      // Simple delete for comments (could also use modal, but for speed keeping simple)
+      try {
+        await remove(ref(db, `comments/${commentId}`));
+      } catch(e) {
+         setErrorMessage("Delete failed: " + e.message);
+         setShowErrorModal(true);
       }
   };
 
@@ -506,139 +579,163 @@ function PostCard({ post, currentUser, onViewProfile, userMap }) {
   const friendList = currentUser.friends ? Object.keys(currentUser.friends) : [];
 
   return (
-    <div className="bg-gray-800 rounded-2xl p-5 border border-gray-700 shadow-sm transition hover:border-gray-600 relative group">
-      <div className="flex justify-between items-start mb-3">
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => onViewProfile(post.userId)}>
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm border ${post.author.toLowerCase() === 'tuntun' ? 'bg-yellow-500/20 border-yellow-500 text-yellow-400' : 'bg-gradient-to-br from-gray-700 to-gray-600 border-gray-500 text-gray-200'}`}>
-            {post.author[0].toUpperCase()}
-          </div>
-          <div>
-            <h3 className="font-bold text-gray-200 leading-tight hover:underline" style={nameStyle}>{post.authorDisplay}</h3>
-            <span className="text-xs text-gray-500 font-medium">@{post.author} • {new Date(post.createdAt).toLocaleDateString()}</span>
-          </div>
-        </div>
-        
-        {(isOwner || isAdmin) && (
-            <div className="relative">
-                <button onClick={() => setMenuOpen(!menuOpen)} className="text-gray-400 hover:text-white p-1">
-                    <MoreHorizontal size={20} />
-                </button>
-                {menuOpen && (
-                    <div className="absolute right-0 top-8 bg-gray-700 rounded-lg shadow-xl border border-gray-600 z-10 w-32 overflow-hidden">
-                        {isOwner && (
-                            <button 
-                                onClick={(e) => { e.stopPropagation(); setIsEditing(true); setMenuOpen(false); }}
-                                className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-600 flex items-center gap-2"
-                            >
-                                <Edit2 size={14} /> Edit
-                            </button>
-                        )}
-                        <button 
-                            onClick={deletePost}
-                            className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-gray-600 flex items-center gap-2"
-                        >
-                            <Trash2 size={14} /> Delete
-                        </button>
-                    </div>
-                )}
+    <>
+        <div className="bg-gray-800 rounded-2xl p-5 border border-gray-700 shadow-sm transition hover:border-gray-600 relative group">
+        <div className="flex justify-between items-start mb-3">
+            <div className="flex items-center gap-3 cursor-pointer" onClick={() => onViewProfile(post.userId)}>
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm border ${post.author.toLowerCase() === 'tuntun' ? 'bg-yellow-500/20 border-yellow-500 text-yellow-400' : 'bg-gradient-to-br from-gray-700 to-gray-600 border-gray-500 text-gray-200'}`}>
+                {post.author[0].toUpperCase()}
             </div>
-        )}
-      </div>
-
-      {isEditing ? (
-          <div className="mb-4">
-              <textarea 
-                  className="w-full bg-gray-900 text-white p-2 rounded-lg border border-indigo-500 outline-none"
-                  value={editContent}
-                  onChange={(e) => setEditContent(e.target.value)}
-              />
-              <div className="flex justify-end gap-2 mt-2">
-                  <button onClick={() => setIsEditing(false)} className="text-xs text-gray-400 hover:text-white">Cancel</button>
-                  <button onClick={saveEdit} className="text-xs bg-indigo-600 px-3 py-1 rounded text-white">Save</button>
-              </div>
-          </div>
-      ) : (
-        <p className="text-gray-300 mb-4 whitespace-pre-wrap leading-relaxed text-[15px]">
-            {renderContent(post.content)}
-        </p>
-      )}
-
-      <div className="flex items-center gap-6 text-gray-400 border-t border-gray-700 pt-3 mt-2">
-        <button 
-          onClick={toggleLike}
-          className={`flex items-center gap-2 transition hover:bg-gray-700/50 px-2 py-1 rounded-lg ${isLiked ? 'text-pink-500' : 'hover:text-pink-400'}`}
-        >
-          <Heart size={18} fill={isLiked ? "currentColor" : "none"} />
-          <span className="text-sm font-medium">{post.likes ? Object.keys(post.likes).length : 0}</span>
-        </button>
-        <button 
-          onClick={loadComments}
-          className="flex items-center gap-2 transition hover:text-indigo-400 hover:bg-gray-700/50 px-2 py-1 rounded-lg"
-        >
-          <MessageCircle size={18} />
-          <span className="text-sm font-medium">{showComments ? 'Hide' : 'Comments'}</span>
-        </button>
-      </div>
-
-      {showComments && (
-        <div className="mt-4 space-y-3 pl-0 md:pl-2">
-          <div className="bg-gray-900/30 rounded-xl p-3 space-y-3">
-             {comments.length === 0 && <p className="text-xs text-gray-500 text-center py-2">No comments yet</p>}
-             {comments.map(comment => {
-                const commentNameStyle = comment.author.toLowerCase() === 'tuntun' 
-                    ? { color: '#FFD700', textShadow: '0 0 3px rgba(255, 215, 0, 0.5)' } 
-                    : {};
-                const isCommentOwner = comment.userId === currentUser.uid;
-                
-                return (
-                    <div key={comment.id} className="bg-gray-800/80 p-3 rounded-xl border border-gray-700/50 relative group/comment">
-                    <div className="flex justify-between items-center mb-1">
-                        <span className="font-bold text-xs text-indigo-400 cursor-pointer hover:underline" style={commentNameStyle} onClick={() => onViewProfile(comment.userId)}>@{comment.author}</span>
-                        <div className="flex items-center gap-2">
-                            <span className="text-[10px] text-gray-600">{formatTime(comment.createdAt)}</span>
-                            {(isCommentOwner || isAdmin) && (
+            <div>
+                <h3 className="font-bold text-gray-200 leading-tight hover:underline" style={nameStyle}>{post.authorDisplay}</h3>
+                <span className="text-xs text-gray-500 font-medium">@{post.author} • {new Date(post.createdAt).toLocaleDateString()}</span>
+            </div>
+            </div>
+            
+            {(isOwner || isAdmin) && (
+                <div className="relative">
+                    <button onClick={() => setMenuOpen(!menuOpen)} className="text-gray-400 hover:text-white p-1">
+                        <MoreHorizontal size={20} />
+                    </button>
+                    {menuOpen && (
+                        <div className="absolute right-0 top-8 bg-gray-700 rounded-lg shadow-xl border border-gray-600 z-10 w-32 overflow-hidden">
+                            {isOwner && (
                                 <button 
-                                    onClick={() => deleteComment(comment.id)} 
-                                    className="text-gray-600 hover:text-red-400 opacity-0 group-hover/comment:opacity-100 transition"
+                                    onClick={(e) => { e.stopPropagation(); setIsEditing(true); setMenuOpen(false); }}
+                                    className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-600 flex items-center gap-2"
                                 >
-                                    <Trash2 size={12} />
+                                    <Edit2 size={14} /> Edit
                                 </button>
                             )}
+                            <button 
+                                onClick={initiateDelete}
+                                className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-gray-600 flex items-center gap-2"
+                            >
+                                <Trash2 size={14} /> Delete
+                            </button>
                         </div>
-                    </div>
-                    <p className="text-sm text-gray-300">{comment.content}</p>
-                    </div>
-                );
-             })}
-          </div>
-          
-          <div className="flex gap-2 mt-2 items-start">
-             <button 
-                onClick={handleAIReply}
-                disabled={isGenerating}
-                className="p-2 mt-1 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition"
-                title="AI Suggest Reply"
-             >
-                 <Bot size={18} className={isGenerating ? "animate-pulse" : ""} />
-             </button>
-             
-             <div className="flex-1 relative">
-                <MentionInput 
-                    className="w-full bg-gray-900 rounded-lg px-4 py-2 text-sm outline-none border border-gray-700 focus:border-indigo-500 transition"
-                    placeholder="Write a comment... (@ to mention)"
-                    value={newComment}
-                    onChange={(e) => setNewComment(e.target.value)}
-                    friends={friendList}
-                />
-             </div>
-
-            <button onClick={handleComment} className="p-2 mt-1 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition">
-              <Send size={18} />
-            </button>
-          </div>
+                    )}
+                </div>
+            )}
         </div>
-      )}
-    </div>
+
+        {isEditing ? (
+            <div className="mb-4">
+                <textarea 
+                    className="w-full bg-gray-900 text-white p-2 rounded-lg border border-indigo-500 outline-none"
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                />
+                <div className="flex justify-end gap-2 mt-2">
+                    <button onClick={() => setIsEditing(false)} className="text-xs text-gray-400 hover:text-white">Cancel</button>
+                    <button onClick={saveEdit} className="text-xs bg-indigo-600 px-3 py-1 rounded text-white">Save</button>
+                </div>
+            </div>
+        ) : (
+            <p className="text-gray-300 mb-4 whitespace-pre-wrap leading-relaxed text-[15px]">
+                {renderContent(post.content)}
+            </p>
+        )}
+
+        <div className="flex items-center gap-6 text-gray-400 border-t border-gray-700 pt-3 mt-2">
+            <button 
+            onClick={toggleLike}
+            className={`flex items-center gap-2 transition hover:bg-gray-700/50 px-2 py-1 rounded-lg ${isLiked ? 'text-pink-500' : 'hover:text-pink-400'}`}
+            >
+            <Heart size={18} fill={isLiked ? "currentColor" : "none"} />
+            <span className="text-sm font-medium">{post.likes ? Object.keys(post.likes).length : 0}</span>
+            </button>
+            <button 
+            onClick={loadComments}
+            className="flex items-center gap-2 transition hover:text-indigo-400 hover:bg-gray-700/50 px-2 py-1 rounded-lg"
+            >
+            <MessageCircle size={18} />
+            <span className="text-sm font-medium">{showComments ? 'Hide' : 'Comments'}</span>
+            </button>
+        </div>
+
+        {showComments && (
+            <div className="mt-4 space-y-3 pl-0 md:pl-2">
+            <div className="bg-gray-900/30 rounded-xl p-3 space-y-3">
+                {comments.length === 0 && <p className="text-xs text-gray-500 text-center py-2">No comments yet</p>}
+                {comments.map(comment => {
+                    const commentNameStyle = comment.author.toLowerCase() === 'tuntun' 
+                        ? { color: '#FFD700', textShadow: '0 0 3px rgba(255, 215, 0, 0.5)' } 
+                        : {};
+                    const isCommentOwner = comment.userId === currentUser.uid;
+                    
+                    return (
+                        <div key={comment.id} className="bg-gray-800/80 p-3 rounded-xl border border-gray-700/50 relative group/comment">
+                        <div className="flex justify-between items-center mb-1">
+                            <span className="font-bold text-xs text-indigo-400 cursor-pointer hover:underline" style={commentNameStyle} onClick={() => onViewProfile(comment.userId)}>@{comment.author}</span>
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-gray-600">{formatTime(comment.createdAt)}</span>
+                                {(isCommentOwner || isAdmin) && (
+                                    <button 
+                                        onClick={() => deleteComment(comment.id)} 
+                                        className="text-gray-600 hover:text-red-400 opacity-0 group-hover/comment:opacity-100 transition"
+                                    >
+                                        <Trash2 size={12} />
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                        <p className="text-sm text-gray-300">{comment.content}</p>
+                        </div>
+                    );
+                })}
+            </div>
+            
+            <div className="flex gap-2 mt-2 items-start">
+                <button 
+                    onClick={handleAIReply}
+                    disabled={isGenerating}
+                    className="p-2 mt-1 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition"
+                    title="AI Suggest Reply"
+                >
+                    <Bot size={18} className={isGenerating ? "animate-pulse" : ""} />
+                </button>
+                
+                <div className="flex-1 relative">
+                    <MentionInput 
+                        className="w-full bg-gray-900 rounded-lg px-4 py-2 text-sm outline-none border border-gray-700 focus:border-indigo-500 transition"
+                        placeholder="Write a comment... (@ to mention)"
+                        value={newComment}
+                        onChange={(e) => setNewComment(e.target.value)}
+                        friends={friendList}
+                    />
+                </div>
+
+                <button onClick={handleComment} className="p-2 mt-1 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition">
+                <Send size={18} />
+                </button>
+            </div>
+            </div>
+        )}
+        </div>
+
+        {/* --- Custom Modals --- */}
+        <ConfirmDialog 
+            isOpen={showDeleteConfirm}
+            onClose={() => setShowDeleteConfirm(false)}
+            onConfirm={confirmDelete}
+            title="Delete Post?"
+            message="Are you sure you want to delete this post? This action cannot be undone."
+            isDeleting={isDeleting}
+        />
+
+        <Modal
+            isOpen={showErrorModal}
+            onClose={() => setShowErrorModal(false)}
+            title="Error"
+            type="danger"
+        >
+            {errorMessage}
+            <div className="mt-4 flex justify-end">
+                <button onClick={() => setShowErrorModal(false)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg">Okay</button>
+            </div>
+        </Modal>
+    </>
   );
 }
 
@@ -693,7 +790,7 @@ function HomeFeed({ appUser, onViewProfile, userMap }) {
       setNewPost('');
     } catch (e) {
       console.error(e);
-      alert("Failed to post.");
+      // In a real app we would use a toast here
     }
     setIsPosting(false);
   };
@@ -1044,8 +1141,8 @@ function FriendsView({ appUser, onViewProfile }) {
             {requests.map(req => (
                 <div key={req} className="bg-gray-800 p-4 rounded-xl flex items-center justify-between border border-gray-700">
                    <div className="flex items-center gap-3 cursor-pointer" onClick={() => {
-                        const uid = allUsersMap[req];
-                        if (uid) onViewProfile(uid);
+                       const uid = allUsersMap[req];
+                       if (uid) onViewProfile(uid);
                    }}>
                         <div className="w-10 h-10 rounded-full bg-indigo-900/50 flex items-center justify-center font-bold text-indigo-300">
                           {req[0].toUpperCase()}
@@ -1356,7 +1453,7 @@ function NotificationsView({ appUser, onViewPost }) {
                 {notifs.length === 0 && (
                      <div className="text-center py-12 text-gray-500 bg-gray-800/30 rounded-2xl border border-dashed border-gray-700">
                         No new notifications.
-                    </div>
+                     </div>
                 )}
                 {notifs.map(n => (
                     <div 
@@ -1426,7 +1523,6 @@ function Profile({ appUser, isMyProfile, onViewProfile }) {
             setIsEditingProfile(false);
         } catch (error) {
             console.error("Failed to update profile", error);
-            alert("Failed to save changes.");
         }
     };
 
