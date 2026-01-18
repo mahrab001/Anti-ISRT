@@ -20,6 +20,7 @@ import {
   update,
   remove
 } from 'firebase/database';
+// Using standard stable icons to prevent crashes
 import { 
   User, 
   MessageSquare, 
@@ -34,7 +35,6 @@ import {
   MessageCircle, 
   AtSign,
   Search,
-  Loader,
   Sparkles,
   Bot,
   Zap,
@@ -45,9 +45,9 @@ import {
   Check,
   Save,
   ArrowLeft,
-  UserMinus,
   XCircle,
-  Users
+  Users,
+  RefreshCw 
 } from 'lucide-react';
 
 // --- Firebase Configuration (Anti-Isrt Project) ---
@@ -97,7 +97,6 @@ const formatTime = (timestamp) => {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-// Helper to add notifications
 const sendNotification = async (targetUid, type, fromUsername, contentId = null, extraData = {}) => {
     if (!targetUid) return;
     const notifRef = push(ref(db, `notifications/${targetUid}`));
@@ -112,6 +111,76 @@ const sendNotification = async (targetUid, type, fromUsername, contentId = null,
 };
 
 // --- Sub-Components ---
+
+// Loading Spinner Component (Replaces Loader/Loader2 to fix crashes)
+const LoadingSpinner = () => (
+  <div className="animate-spin text-indigo-500">
+    <RefreshCw size={48} />
+  </div>
+);
+
+const MentionInput = ({ value, onChange, placeholder, friends, className, disabled }) => {
+  const [suggestions, setSuggestions] = useState([]);
+  const inputRef = useRef(null);
+
+  const handleInput = (e) => {
+    const val = e.target.value;
+    const selectionStart = e.target.selectionStart;
+    onChange(e);
+
+    const textBeforeCursor = val.substring(0, selectionStart);
+    const match = textBeforeCursor.match(/@(\w*)$/);
+
+    if (match) {
+      const query = match[1].toLowerCase();
+      const matches = friends.filter(f => f.toLowerCase().startsWith(query)).slice(0, 5);
+      setSuggestions(matches);
+    } else {
+      setSuggestions([]);
+    }
+  };
+
+  const handleSelect = (name) => {
+    const selectionStart = inputRef.current.selectionStart;
+    const val = value;
+    const textBeforeCursor = val.substring(0, selectionStart);
+    const lastAtPos = textBeforeCursor.lastIndexOf('@');
+    
+    const newValue = val.substring(0, lastAtPos) + `@${name} ` + val.substring(selectionStart);
+    
+    onChange({ target: { value: newValue } });
+    setSuggestions([]);
+    
+    setTimeout(() => inputRef.current && inputRef.current.focus(), 0);
+  };
+
+  return (
+    <div className="relative w-full">
+      <textarea
+        ref={inputRef}
+        className={className}
+        placeholder={placeholder}
+        value={value}
+        onChange={handleInput}
+        disabled={disabled}
+      />
+      {suggestions.length > 0 && (
+        <div className="absolute left-0 right-0 bg-gray-700 border border-gray-600 rounded-lg shadow-xl z-50 mt-1 max-h-40 overflow-y-auto">
+          {suggestions.map((name) => (
+            <div
+              key={name}
+              onClick={() => handleSelect(name)}
+              className="px-4 py-2 hover:bg-gray-600 cursor-pointer text-white text-sm flex items-center gap-2 border-b border-gray-600 last:border-0"
+            >
+              <span className="w-6 h-6 rounded-full bg-indigo-500 flex items-center justify-center text-xs font-bold">{name[0].toUpperCase()}</span>
+              {name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 function NavButton({ icon: Icon, label, active, onClick, hasBadge }) {
   return (
@@ -279,7 +348,7 @@ function AuthScreen() {
             className="w-full bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-bold py-3.5 rounded-xl transition-all transform active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-900/30 flex items-center justify-center gap-2"
           >
             {loading ? (
-               <Loader size={18} className="animate-spin" />
+               <LoadingSpinner />
             ) : (
                <>
                  {isLogin ? 'Welcome Back' : 'Create Account'}
@@ -293,7 +362,7 @@ function AuthScreen() {
   );
 }
 
-function PostCard({ post, currentUser, onViewProfile }) {
+function PostCard({ post, currentUser, onViewProfile, userMap }) {
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState([]);
   const [newComment, setNewComment] = useState('');
@@ -305,7 +374,7 @@ function PostCard({ post, currentUser, onViewProfile }) {
   const likes = post.likes ? Object.values(post.likes) : [];
   const isLiked = likes.includes(currentUser.username);
   const isOwner = post.userId === currentUser.uid;
-  const isAdmin = currentUser.username.toLowerCase() === 'tuntun'; // Case insensitive admin
+  const isAdmin = currentUser.username.toLowerCase() === 'tuntun'; 
 
   const renderContent = (text) => {
     return text.split(/(@\w+)/g).map((part, i) => {
@@ -329,13 +398,19 @@ function PostCard({ post, currentUser, onViewProfile }) {
     }
   };
 
-  const deletePost = async () => {
+  const deletePost = async (e) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setMenuOpen(false); // Close menu instantly
+    
     if (window.confirm("Are you sure you want to delete this post?")) {
         try {
             await remove(ref(db, `posts/${post.id}`));
         } catch(e) {
             console.error(e);
-            alert("Delete failed. Check Firebase Rules if permission denied. " + e.message);
+            alert(`Delete failed. Check Realtime Database Rules.\n\nError Code: ${e.code}\nMessage: ${e.message}`);
         }
     }
   };
@@ -374,18 +449,33 @@ function PostCard({ post, currentUser, onViewProfile }) {
 
   const handleComment = async () => {
     if (!newComment.trim()) return;
+    
+    // Check for mentions in comment
+    const matches = newComment.match(/@(\w+)/g) || [];
+    const mentionedUsernames = matches.map(m => m.substring(1).toLowerCase());
+
     const newCommentRef = push(ref(db, 'comments'));
-    await set(newCommentRef, {
+    const commentData = {
       postId: post.id,
       author: currentUser.username,
       userId: currentUser.uid, 
       content: newComment,
       createdAt: Date.now()
-    });
+    };
+    await set(newCommentRef, commentData);
     
+    // Notify post owner
     if (post.userId !== currentUser.uid) {
         sendNotification(post.userId, 'comment', currentUser.username, post.id, { commentText: newComment });
     }
+
+    // Notify mentioned users
+    mentionedUsernames.forEach(uname => {
+        const uid = userMap[uname];
+        if (uid && uid !== currentUser.uid && uid !== post.userId) {
+            sendNotification(uid, 'mention', currentUser.username, post.id, { commentText: newComment });
+        }
+    });
     
     setNewComment('');
   };
@@ -412,6 +502,9 @@ function PostCard({ post, currentUser, onViewProfile }) {
     ? { color: '#FFD700', textShadow: '0 0 5px rgba(255, 215, 0, 0.5)' } 
     : {};
 
+  // Get friends list for mentions
+  const friendList = currentUser.friends ? Object.keys(currentUser.friends) : [];
+
   return (
     <div className="bg-gray-800 rounded-2xl p-5 border border-gray-700 shadow-sm transition hover:border-gray-600 relative group">
       <div className="flex justify-between items-start mb-3">
@@ -434,7 +527,7 @@ function PostCard({ post, currentUser, onViewProfile }) {
                     <div className="absolute right-0 top-8 bg-gray-700 rounded-lg shadow-xl border border-gray-600 z-10 w-32 overflow-hidden">
                         {isOwner && (
                             <button 
-                                onClick={() => { setIsEditing(true); setMenuOpen(false); }}
+                                onClick={(e) => { e.stopPropagation(); setIsEditing(true); setMenuOpen(false); }}
                                 className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-600 flex items-center gap-2"
                             >
                                 <Edit2 size={14} /> Edit
@@ -519,24 +612,27 @@ function PostCard({ post, currentUser, onViewProfile }) {
              })}
           </div>
           
-          <div className="flex gap-2 mt-2">
+          <div className="flex gap-2 mt-2 items-start">
              <button 
                 onClick={handleAIReply}
                 disabled={isGenerating}
-                className="p-2 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition"
+                className="p-2 mt-1 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition"
                 title="AI Suggest Reply"
              >
                  <Bot size={18} className={isGenerating ? "animate-pulse" : ""} />
              </button>
-            <input 
-              type="text" 
-              className="flex-1 bg-gray-900 rounded-lg px-4 py-2 text-sm outline-none border border-gray-700 focus:border-indigo-500 transition"
-              placeholder="Write a comment..."
-              value={newComment}
-              onChange={(e) => setNewComment(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleComment()}
-            />
-            <button onClick={handleComment} className="text-indigo-400 hover:bg-indigo-500/10 p-2 rounded-lg transition">
+             
+             <div className="flex-1 relative">
+                <MentionInput 
+                    className="w-full bg-gray-900 rounded-lg px-4 py-2 text-sm outline-none border border-gray-700 focus:border-indigo-500 transition"
+                    placeholder="Write a comment... (@ to mention)"
+                    value={newComment}
+                    onChange={(e) => setNewComment(e.target.value)}
+                    friends={friendList}
+                />
+             </div>
+
+            <button onClick={handleComment} className="p-2 mt-1 text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition">
               <Send size={18} />
             </button>
           </div>
@@ -546,7 +642,7 @@ function PostCard({ post, currentUser, onViewProfile }) {
   );
 }
 
-function HomeFeed({ appUser, onViewProfile }) {
+function HomeFeed({ appUser, onViewProfile, userMap }) {
   const [posts, setPosts] = useState([]);
   const [newPost, setNewPost] = useState('');
   const [isPosting, setIsPosting] = useState(false);
@@ -586,6 +682,14 @@ function HomeFeed({ appUser, onViewProfile }) {
         mentions: cleanMentions
       });
 
+      // Send notifications for mentions
+      cleanMentions.forEach(async (username) => {
+         const uid = userMap[username];
+         if (uid && uid !== appUser.uid) {
+             sendNotification(uid, 'mention', appUser.username, newPostRef.key);
+         }
+      });
+
       setNewPost('');
     } catch (e) {
       console.error(e);
@@ -602,6 +706,8 @@ function HomeFeed({ appUser, onViewProfile }) {
       setIsGenerating(false);
   };
 
+  const friendList = appUser.friends ? Object.keys(appUser.friends) : [];
+
   return (
     <div className="space-y-6 md:px-2">
       <div className="bg-gray-800 rounded-2xl p-4 shadow-lg border border-gray-700 mx-4 md:mx-0">
@@ -610,11 +716,12 @@ function HomeFeed({ appUser, onViewProfile }) {
             {appUser.username ? appUser.username[0].toUpperCase() : '?'}
           </div>
           <div className="flex-1">
-            <textarea
-              className="w-full bg-gray-900/50 text-white rounded-xl p-3 outline-none resize-none focus:bg-gray-900 transition border border-transparent focus:border-indigo-500/50 min-h-[80px]"
-              placeholder="What's on your mind? Use @ to mention friends."
-              value={newPost}
-              onChange={(e) => setNewPost(e.target.value)}
+            <MentionInput 
+                className="w-full bg-gray-900/50 text-white rounded-xl p-3 outline-none resize-none focus:bg-gray-900 transition border border-transparent focus:border-indigo-500/50 min-h-[80px]"
+                placeholder="What's on your mind? Use @ to mention friends."
+                value={newPost}
+                onChange={(e) => setNewPost(e.target.value)}
+                friends={friendList}
             />
             <div className="flex justify-between mt-2">
               <button
@@ -640,7 +747,7 @@ function HomeFeed({ appUser, onViewProfile }) {
 
       <div className="space-y-4 px-4 md:px-0">
         {posts.map(post => (
-          <PostCard key={post.id} post={post} currentUser={appUser} onViewProfile={onViewProfile} />
+          <PostCard key={post.id} post={post} currentUser={appUser} onViewProfile={onViewProfile} userMap={userMap} />
         ))}
         {posts.length === 0 && (
           <div className="text-center text-gray-500 py-12 bg-gray-800/30 rounded-2xl border border-gray-700/30 border-dashed">
@@ -778,7 +885,7 @@ function OtherUserProfile({ appUser, targetUser, onBack }) {
             <div className="px-4 mt-8 space-y-4">
                 <h3 className="font-bold text-xl text-white mb-4 border-b border-gray-800 pb-2">Posts</h3>
                 {posts.map(post => (
-                    <PostCard key={post.id} post={post} currentUser={appUser} onViewProfile={()=>{}} />
+                    <PostCard key={post.id} post={post} currentUser={appUser} onViewProfile={()=>{}} userMap={{}} />
                 ))}
             </div>
         </div>
@@ -791,6 +898,7 @@ function FriendsView({ appUser, onViewProfile }) {
   const [requests, setRequests] = useState([]);
   const [myFriends, setMyFriends] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [allUsersMap, setAllUsersMap] = useState({});
 
   useEffect(() => {
     const userRef = ref(db, `users/${appUser.uid}`);
@@ -801,6 +909,19 @@ function FriendsView({ appUser, onViewProfile }) {
          setMyFriends(data.friends ? Object.keys(data.friends) : []);
        }
     });
+
+    const usersRef = ref(db, 'users');
+    get(usersRef).then(snap => {
+        if(snap.exists()) {
+            const map = {};
+            snap.forEach(child => {
+                const u = child.val();
+                if(u.username) map[u.username] = child.key; 
+            });
+            setAllUsersMap(map);
+        }
+    });
+
     return () => unsub();
   }, [appUser.uid]);
 
@@ -896,7 +1017,10 @@ function FriendsView({ appUser, onViewProfile }) {
              )}
              {myFriends.map(friend => (
                  <div key={friend} className="bg-gray-800 p-4 rounded-xl flex items-center justify-between border border-gray-700">
-                    <div className="flex items-center gap-3 cursor-pointer" onClick={() => onViewProfile(null)}>
+                    <div className="flex items-center gap-3 cursor-pointer" onClick={() => {
+                        const uid = allUsersMap[friend];
+                        if (uid) onViewProfile(uid);
+                    }}>
                          <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center font-bold text-gray-300">
                            {friend[0].toUpperCase()}
                          </div>
@@ -919,7 +1043,10 @@ function FriendsView({ appUser, onViewProfile }) {
             )}
             {requests.map(req => (
                 <div key={req} className="bg-gray-800 p-4 rounded-xl flex items-center justify-between border border-gray-700">
-                   <div className="flex items-center gap-3 cursor-pointer" onClick={() => {}}>
+                   <div className="flex items-center gap-3 cursor-pointer" onClick={() => {
+                        const uid = allUsersMap[req];
+                        if (uid) onViewProfile(uid);
+                   }}>
                         <div className="w-10 h-10 rounded-full bg-indigo-900/50 flex items-center justify-center font-bold text-indigo-300">
                           {req[0].toUpperCase()}
                         </div>
@@ -1003,7 +1130,6 @@ function MessagesView({ appUser }) {
     const [unreadPerUser, setUnreadPerUser] = useState({});
     const scrollRef = useRef(null);
 
-    // Sync Friends for Chat List
     useEffect(() => {
         const userRef = ref(db, `users/${appUser.uid}`);
         const unsub = onValue(userRef, (snapshot) => {
@@ -1015,7 +1141,6 @@ function MessagesView({ appUser }) {
         return () => unsub();
     }, [appUser.uid]);
 
-    // Global Message Listener to calculate unread counts per user
     useEffect(() => {
         const msgRef = ref(db, 'messages');
         const unsub = onValue(msgRef, (snap) => {
@@ -1023,6 +1148,7 @@ function MessagesView({ appUser }) {
             if(data) {
                 const counts = {};
                 Object.values(data).forEach(m => {
+                    // Exact username match required to prevent false positives
                     if (m.to === appUser.username && !m.read) {
                         counts[m.from] = true;
                     }
@@ -1035,7 +1161,6 @@ function MessagesView({ appUser }) {
         return () => unsub();
     }, [appUser.username]);
 
-    // Active Chat Message Sync & Mark Read
     useEffect(() => {
         if (!activeChatUser) return;
         
@@ -1052,12 +1177,19 @@ function MessagesView({ appUser }) {
                     ).sort((a,b) => a.createdAt - b.createdAt);
                 setMessages(relevant);
 
-                // Mark messages as read
+                // IMPORTANT: Mark messages as read IMMEDIATELY when loaded
+                const updates = {};
+                let hasUpdates = false;
                 entries.forEach(([id, m]) => {
                     if (m.from === activeChatUser && m.to === appUser.username && !m.read) {
-                        update(ref(db, `messages/${id}`), { read: true });
+                        updates[`messages/${id}/read`] = true;
+                        hasUpdates = true;
                     }
                 });
+                
+                if (hasUpdates) {
+                    update(ref(db), updates);
+                }
             } else {
                 setMessages([]);
             }
@@ -1489,7 +1621,7 @@ function SinglePostView({ postId, appUser, onBack, onViewProfile }) {
 
     if (!post) return (
         <div className="h-screen w-full flex flex-col items-center justify-center bg-gray-900 text-white gap-4">
-            <Loader className="animate-spin text-indigo-500" size={48} />
+            <LoadingSpinner />
             <span className="font-medium tracking-widest text-sm text-gray-400">LOADING POST...</span>
         </div>
     );
@@ -1517,12 +1649,14 @@ export default function App() {
   const [viewingPostId, setViewingPostId] = useState(null);
   const [view, setView] = useState('auth'); 
   const [loading, setLoading] = useState(true);
+  const [userMap, setUserMap] = useState({});
   
   // Notification Counters
   const [unreadNotifs, setUnreadNotifs] = useState(false);
   const [unreadMessages, setUnreadMessages] = useState(false);
   
   useEffect(() => {
+    // 1. Listen for Auth
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         setUser(firebaseUser);
@@ -1561,7 +1695,6 @@ export default function App() {
         onValue(notifRef, (snap) => {
             if (snap.exists()) {
                 const vals = Object.values(snap.val());
-                // Only show red dot if there are items explicitly marked false
                 const hasUnread = vals.some(n => n.read === false);
                 setUnreadNotifs(hasUnread);
             } else {
@@ -1573,14 +1706,16 @@ export default function App() {
         const msgRef = ref(db, 'messages');
         onValue(msgRef, (snap) => {
             if (snap.exists()) {
-                // Warning: In prod, we filter server-side.
-                // For demo, we check client side if any message addressed to us is unread.
                 const vals = Object.values(snap.val());
-                // Use profile username if available, otherwise firebase displayname
                 const myUsername = appUserProfile ? appUserProfile.username : firebaseUser.displayName;
                 
                 if (myUsername) {
-                    const hasUnread = vals.some(m => m.to === myUsername && m.read === false);
+                    // Check exact match for recipient AND ensure it's not from self
+                    const hasUnread = vals.some(m => 
+                        m.to === myUsername && 
+                        m.read === false &&
+                        m.from !== myUsername // Don't count self messages
+                    );
                     setUnreadMessages(hasUnread);
                 }
             }
@@ -1593,8 +1728,21 @@ export default function App() {
         setLoading(false);
       }
     });
+
+    // 2. Fetch User Map for mentions (Global)
+    get(ref(db, 'users')).then(snap => {
+        if(snap.exists()) {
+            const map = {};
+            snap.forEach(child => {
+                const u = child.val();
+                if(u.username) map[u.username] = child.key;
+            });
+            setUserMap(map);
+        }
+    });
+
     return () => unsubscribe();
-  }, [appUserProfile]); // Depend on profile to ensure correct username for message check
+  }, [appUserProfile]);
 
   const handleLogout = async () => {
     await firebaseSignOut(auth);
@@ -1629,8 +1777,10 @@ export default function App() {
   if (loading) {
     return (
       <div className="h-screen w-full flex flex-col items-center justify-center bg-gray-900 text-white gap-4">
-        <Loader className="animate-spin text-indigo-500" size={48} />
+        <LoadingSpinner />
         <span className="font-medium tracking-widest text-sm text-gray-400">CONNECTING...</span>
+        {/* Debug Info for User */}
+        <span className="text-xs text-gray-600 mt-2">Project: {firebaseConfig.projectId}</span>
       </div>
     );
   }
@@ -1684,7 +1834,7 @@ export default function App() {
 
         <main className="flex-1 overflow-y-auto bg-gray-900 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent relative w-full">
           <div className="max-w-2xl mx-auto w-full pb-20 md:pb-8 pt-4 md:pt-8 px-0 md:px-4">
-             {view === 'home' && <HomeFeed appUser={appUserProfile} onViewProfile={handleViewProfile} />}
+             {view === 'home' && <HomeFeed appUser={appUserProfile} onViewProfile={handleViewProfile} userMap={userMap} />}
              {view === 'profile' && <Profile appUser={appUserProfile} isMyProfile={true} onViewProfile={handleViewProfile} />}
              {view === 'other_profile' && <OtherUserProfile appUser={appUserProfile} targetUser={viewingUser} onBack={() => setView('home')} />}
              {view === 'friends' && <FriendsView appUser={appUserProfile} onViewProfile={handleViewProfile} />}
