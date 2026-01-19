@@ -91,7 +91,7 @@
             User, MessageSquare, Heart, Bell, Home, LogOut, Send, UserPlus, 
             UserCheck, X, MessageCircle, AtSign, Search, Sparkles, Bot, Zap, 
             AlertCircle, MoreHorizontal, Trash2, Edit2, Check, Save, ArrowLeft, 
-            XCircle, Users, RefreshCw, AlertTriangle 
+            XCircle, Users, RefreshCw, AlertTriangle, Eye, EyeOff 
         } from 'https://esm.sh/lucide-react@0.292.0';
 
         // --- Firebase Configuration ---
@@ -485,6 +485,10 @@
             const [menuOpen, setMenuOpen] = useState(false);
             const [isGenerating, setIsGenerating] = useState(false);
             
+            // Comment Editing State
+            const [editingCommentId, setEditingCommentId] = useState(null);
+            const [editingCommentContent, setEditingCommentContent] = useState('');
+
             // Custom Modal States
             const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
             const [isDeleting, setIsDeleting] = useState(false);
@@ -551,6 +555,23 @@
                 }
             };
 
+            const togglePostAuthorVisibility = async () => {
+                try {
+                    await update(ref(db, `posts/${post.id}`), { hideAuthor: !post.hideAuthor });
+                    setMenuOpen(false);
+                } catch(e) {
+                    console.error("Failed to toggle visibility", e);
+                }
+            };
+
+            const toggleCommentAuthorVisibility = async (comment) => {
+                try {
+                    await update(ref(db, `comments/${comment.id}`), { hideAuthor: !comment.hideAuthor });
+                } catch(e) {
+                    console.error("Failed to toggle comment visibility", e);
+                }
+            };
+
             const initiateDelete = (e) => {
                 if (e) {
                     e.stopPropagation();
@@ -582,6 +603,17 @@
                     setMenuOpen(false);
                 } catch(e) {
                     setErrorMessage("Edit failed: " + e.message);
+                    setShowErrorModal(true);
+                }
+            };
+
+            const saveCommentEdit = async (commentId) => {
+                if (!editingCommentContent.trim()) return;
+                try {
+                    await update(ref(db, `comments/${commentId}`), { content: editingCommentContent });
+                    setEditingCommentId(null);
+                } catch(e) {
+                    setErrorMessage("Edit comment failed: " + e.message);
                     setShowErrorModal(true);
                 }
             };
@@ -648,18 +680,32 @@
             // Decide which comments to show
             const commentsToShow = showAllComments ? comments : comments.slice(0, 3);
 
+            // Hide/Show Logic for Post Author
+            const isHidden = post.hideAuthor;
+            let displayAuthorName = post.authorDisplay;
+            let displayHandle = post.author;
+            
+            if (isHidden) {
+                if (isAdmin) {
+                    displayAuthorName = `${post.authorDisplay} (Hidden)`;
+                } else {
+                    displayAuthorName = "Anonymous";
+                    displayHandle = "anonymous";
+                }
+            }
+
             return (
                 <React.Fragment>
                     <div className="bg-gray-800 rounded-2xl p-5 border border-gray-700 shadow-sm transition hover:border-gray-600 relative group">
                         <div className="flex justify-between items-start mb-3">
-                            <div className="flex items-center gap-3 cursor-pointer" onClick={() => onViewProfile(post.userId)}>
-                            <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm border ${post.author.toLowerCase() === 'tuntun' ? 'bg-yellow-500/20 border-yellow-500 text-yellow-400' : 'bg-gradient-to-br from-gray-700 to-gray-600 border-gray-500 text-gray-200'}`}>
-                                {post.author[0].toUpperCase()}
-                            </div>
-                            <div>
-                                <h3 className="font-bold text-gray-200 leading-tight hover:underline" style={nameStyle}>{post.authorDisplay}</h3>
-                                <span className="text-xs text-gray-500 font-medium">@{post.author} • {new Date(post.createdAt).toLocaleDateString()}</span>
-                            </div>
+                            <div className="flex items-center gap-3 cursor-pointer" onClick={() => !isHidden || isAdmin ? onViewProfile(post.userId) : null}>
+                                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm border ${isHidden && !isAdmin ? 'bg-gray-700 border-gray-600 text-gray-400' : (post.author.toLowerCase() === 'tuntun' ? 'bg-yellow-500/20 border-yellow-500 text-yellow-400' : 'bg-gradient-to-br from-gray-700 to-gray-600 border-gray-500 text-gray-200')}`}>
+                                    {isHidden && !isAdmin ? '?' : post.author[0].toUpperCase()}
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-gray-200 leading-tight hover:underline" style={!isHidden ? nameStyle : {}}>{displayAuthorName}</h3>
+                                    <span className="text-xs text-gray-500 font-medium">@{displayHandle} • {new Date(post.createdAt).toLocaleDateString()}</span>
+                                </div>
                             </div>
                             
                             {(isOwner || isAdmin) && (
@@ -668,15 +714,27 @@
                                         <MoreHorizontal size={20} />
                                     </button>
                                     {menuOpen && (
-                                        <div className="absolute right-0 top-8 bg-gray-700 rounded-lg shadow-xl border border-gray-600 z-10 w-32 overflow-hidden">
-                                            {isOwner && (
+                                        <div className="absolute right-0 top-8 bg-gray-700 rounded-lg shadow-xl border border-gray-600 z-10 w-44 overflow-hidden">
+                                            {/* Edit Post */}
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); setIsEditing(true); setMenuOpen(false); }}
+                                                className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-600 flex items-center gap-2"
+                                            >
+                                                <Edit2 size={14} /> Edit
+                                            </button>
+                                            
+                                            {/* Hide Username (Admin Only) */}
+                                            {isAdmin && (
                                                 <button 
-                                                    onClick={(e) => { e.stopPropagation(); setIsEditing(true); setMenuOpen(false); }}
-                                                    className="w-full text-left px-4 py-2 text-sm text-white hover:bg-gray-600 flex items-center gap-2"
+                                                    onClick={(e) => { e.stopPropagation(); togglePostAuthorVisibility(); }}
+                                                    className="w-full text-left px-4 py-2 text-sm text-yellow-400 hover:bg-gray-600 flex items-center gap-2"
                                                 >
-                                                    <Edit2 size={14} /> Edit
+                                                    {post.hideAuthor ? <Eye size={14} /> : <EyeOff size={14} />}
+                                                    {post.hideAuthor ? "Show Username" : "Hide Username"}
                                                 </button>
                                             )}
+
+                                            {/* Delete Post */}
                                             <button 
                                                 onClick={initiateDelete}
                                                 className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-gray-600 flex items-center gap-2"
@@ -733,21 +791,55 @@
                             {comments.length > 0 && (
                                 <div className="bg-gray-900/30 rounded-xl p-3 space-y-3">
                                     {commentsToShow.map(comment => {
-                                        const commentNameStyle = comment.author.toLowerCase() === 'tuntun' 
+                                        const isCommentHidden = comment.hideAuthor;
+                                        const isCommentOwner = comment.userId === currentUser.uid;
+                                        
+                                        let commentAuthorName = comment.author;
+                                        let commentNameStyle = comment.author.toLowerCase() === 'tuntun' 
                                             ? { color: '#FFD700', textShadow: '0 0 3px rgba(255, 215, 0, 0.5)' } 
                                             : {};
-                                        const isCommentOwner = comment.userId === currentUser.uid;
+
+                                        if (isCommentHidden) {
+                                            if (isAdmin) {
+                                                commentAuthorName = `${comment.author} (Hidden)`;
+                                            } else {
+                                                commentAuthorName = "Anonymous";
+                                                commentNameStyle = { color: '#9CA3AF' }; // Gray for anon
+                                            }
+                                        }
+
                                         const commentLikes = comment.likes ? Object.values(comment.likes) : [];
                                         const isCommentLiked = commentLikes.includes(currentUser.username);
+                                        const isEditingThis = editingCommentId === comment.id;
                                         
                                         return (
                                             <div key={comment.id} className="bg-gray-800/80 p-3 rounded-xl border border-gray-700/50 relative group/comment">
                                                 <div className="flex justify-between items-center mb-1">
-                                                    <span className="font-bold text-xs text-indigo-400 cursor-pointer hover:underline" style={commentNameStyle} onClick={() => onViewProfile(comment.userId)}>@{comment.author}</span>
+                                                    <span 
+                                                        className="font-bold text-xs text-indigo-400 cursor-pointer hover:underline" 
+                                                        style={commentNameStyle} 
+                                                        onClick={() => (!isCommentHidden || isAdmin) ? onViewProfile(comment.userId) : null}
+                                                    >
+                                                        @{commentAuthorName}
+                                                    </span>
                                                     <span className="text-[10px] text-gray-600">{formatTime(comment.createdAt)}</span>
                                                 </div>
                                                 
-                                                <p className="text-sm text-gray-300 mb-2">{renderContent(comment.content)}</p>
+                                                {isEditingThis ? (
+                                                    <div className="mb-2">
+                                                        <textarea 
+                                                            className="w-full bg-gray-700 text-white text-sm p-2 rounded border border-gray-600 outline-none"
+                                                            value={editingCommentContent}
+                                                            onChange={(e) => setEditingCommentContent(e.target.value)}
+                                                        />
+                                                        <div className="flex justify-end gap-2 mt-1">
+                                                            <button onClick={() => setEditingCommentId(null)} className="text-[10px] text-gray-400 hover:text-white">Cancel</button>
+                                                            <button onClick={() => saveCommentEdit(comment.id)} className="text-[10px] bg-indigo-600 px-2 py-0.5 rounded text-white">Save</button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <p className="text-sm text-gray-300 mb-2">{renderContent(comment.content)}</p>
+                                                )}
 
                                                 <div className="flex items-center justify-between">
                                                     <button 
@@ -758,14 +850,35 @@
                                                         {commentLikes.length > 0 && <span className="font-medium">{commentLikes.length}</span>}
                                                     </button>
 
-                                                    {(isCommentOwner || isAdmin) && (
-                                                        <button 
-                                                            onClick={() => deleteComment(comment.id)} 
-                                                            className="text-gray-600 hover:text-red-400 opacity-0 group-hover/comment:opacity-100 transition p-1"
-                                                        >
-                                                            <Trash2 size={14} />
-                                                        </button>
-                                                    )}
+                                                    <div className="flex gap-2 opacity-0 group-hover/comment:opacity-100 transition">
+                                                        {/* Admin Hide Username Button for Comments */}
+                                                        {isAdmin && (
+                                                            <button 
+                                                                onClick={() => toggleCommentAuthorVisibility(comment)}
+                                                                className="text-yellow-500 hover:text-yellow-400 p-1"
+                                                                title={comment.hideAuthor ? "Show Username" : "Hide Username"}
+                                                            >
+                                                                {comment.hideAuthor ? <Eye size={12} /> : <EyeOff size={12} />}
+                                                            </button>
+                                                        )}
+
+                                                        {(isCommentOwner || isAdmin) && (
+                                                            <>
+                                                                <button 
+                                                                    onClick={() => { setEditingCommentId(comment.id); setEditingCommentContent(comment.content); }} 
+                                                                    className="text-gray-500 hover:text-white p-1"
+                                                                >
+                                                                    <Edit2 size={12} />
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => deleteComment(comment.id)} 
+                                                                    className="text-gray-500 hover:text-red-400 p-1"
+                                                                >
+                                                                    <Trash2 size={12} />
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             </div>
                                         );
@@ -833,7 +946,6 @@
             );
         }
 
-        // ... (HomeFeed, OtherUserProfile, FriendsView, NotificationsView, Profile, SinglePostView remain unchanged) ...
         function HomeFeed({ appUser, onViewProfile, userMap }) {
             const [posts, setPosts] = useState([]);
             const [newPost, setNewPost] = useState('');
@@ -951,11 +1063,15 @@
             );
         }
 
-        // OtherUserProfile, FriendsView, MessagesView, NotificationsView, Profile, SinglePostView ...
-        function OtherUserProfile({ appUser, targetUser, onBack }) {
+        function OtherUserProfile({ appUser, targetUser, onBack, onMessage }) {
             const [posts, setPosts] = useState([]);
             const [requestSent, setRequestSent] = useState(false);
             const [isFriend, setIsFriend] = useState(false);
+            
+            // Admin Logic
+            const isAdmin = appUser.username.toLowerCase() === 'tuntun';
+            const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+            const [isDeleting, setIsDeleting] = useState(false);
 
             useEffect(() => {
                 if (targetUser && appUser) {
@@ -991,6 +1107,22 @@
                     await set(reqRef, { username: appUser.username, uid: appUser.uid }); 
                     setRequestSent(true);
                     sendNotification(targetUser.uid, 'friend_request', appUser.username);
+                }
+            };
+            
+            const handleDeleteUser = async () => {
+                setIsDeleting(true);
+                try {
+                    // Delete the user's profile data
+                    await remove(ref(db, `users/${targetUser.uid}`));
+                    
+                    setShowDeleteConfirm(false);
+                    setIsDeleting(false);
+                    onBack(); // Go back to home screen
+                } catch (e) {
+                    console.error("Error deleting user:", e);
+                    setIsDeleting(false);
+                    alert("Failed to delete user: " + e.message);
                 }
             };
 
@@ -1029,30 +1161,53 @@
                                 )}
                             </div>
 
-                            <div className="mt-4 md:mt-16">
+                            <div className="mt-4 md:mt-16 flex flex-col gap-3 items-center md:items-end">
                                 {isFriend ? (
                                     <span className="bg-green-600/20 text-green-400 px-5 py-2 rounded-full border border-green-600/50 text-sm font-medium flex items-center gap-2">
                                         <UserCheck size={16} /> Friend
                                     </span>
                                 ) : (
-                                    <button 
-                                        onClick={toggleFriendRequest}
-                                        className={`px-5 py-2 rounded-full border text-sm font-bold transition flex items-center gap-2 ${
-                                            requestSent 
-                                            ? 'bg-green-600 text-white border-green-600 hover:bg-red-600 hover:border-red-600 group' 
-                                            : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-500'
-                                        }`}
-                                    >
-                                        {requestSent ? (
-                                            <>
-                                                <span className="block group-hover:hidden flex items-center gap-2"><Check size={16}/> Sent</span>
-                                                <span className="hidden group-hover:flex items-center gap-2"><X size={16}/> Cancel</span>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <UserPlus size={16} /> Add Friend
-                                            </>
+                                    <div className="flex gap-2">
+                                        <button 
+                                            onClick={toggleFriendRequest}
+                                            className={`px-5 py-2 rounded-full border text-sm font-bold transition flex items-center gap-2 ${
+                                                requestSent 
+                                                ? 'bg-green-600 text-white border-green-600 hover:bg-red-600 hover:border-red-600 group' 
+                                                : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-500'
+                                            }`}
+                                        >
+                                            {requestSent ? (
+                                                <>
+                                                    <span className="block group-hover:hidden flex items-center gap-2"><Check size={16}/> Sent</span>
+                                                    <span className="hidden group-hover:flex items-center gap-2"><X size={16}/> Cancel</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <UserPlus size={16} /> Add Friend
+                                                </>
+                                            )}
+                                        </button>
+                                        
+                                        {/* Admin Direct Message */}
+                                        {isAdmin && (
+                                            <button 
+                                                onClick={() => onMessage(targetUser.username)}
+                                                className="bg-indigo-500/20 text-indigo-400 border border-indigo-500/50 hover:bg-indigo-500 hover:text-white px-3 py-2 rounded-full text-sm font-bold transition flex items-center gap-2"
+                                                title="Direct Message"
+                                            >
+                                                <Send size={16} />
+                                            </button>
                                         )}
+                                    </div>
+                                )}
+
+                                {/* Admin Delete Button */}
+                                {isAdmin && (
+                                    <button 
+                                        onClick={() => setShowDeleteConfirm(true)}
+                                        className="bg-red-900/30 text-red-400 border border-red-900/50 hover:bg-red-900/50 px-5 py-2 rounded-full text-sm font-bold transition flex items-center gap-2"
+                                    >
+                                        <Trash2 size={16} /> Delete Account
                                     </button>
                                 )}
                             </div>
@@ -1080,6 +1235,15 @@
                             <PostCard key={post.id} post={post} currentUser={appUser} onViewProfile={()=>{}} userMap={{}} />
                         ))}
                     </div>
+
+                    <ConfirmDialog 
+                        isOpen={showDeleteConfirm}
+                        onClose={() => setShowDeleteConfirm(false)}
+                        onConfirm={handleDeleteUser}
+                        title="Delete User?"
+                        message={`Are you sure you want to delete @${targetUser.username}? This will remove their profile data permanently.`}
+                        isDeleting={isDeleting}
+                    />
                 </div>
             );
         }
@@ -1314,14 +1478,20 @@
             );
         }
 
-        function MessagesView({ appUser }) {
+        function MessagesView({ appUser, initialChatUser }) {
             const [chats, setChats] = useState([]);
-            const [activeChatUser, setActiveChatUser] = useState(null); 
+            const [activeChatUser, setActiveChatUser] = useState(initialChatUser || null); 
             const [messages, setMessages] = useState([]);
             const [msgInput, setMsgInput] = useState('');
             const [unreadPerUser, setUnreadPerUser] = useState({});
             const [friendLastActivity, setFriendLastActivity] = useState({});
             const scrollRef = useRef(null);
+
+            useEffect(() => {
+                if (initialChatUser) {
+                    setActiveChatUser(initialChatUser);
+                }
+            }, [initialChatUser]);
 
             useEffect(() => {
                 const userRef = ref(db, `users/${appUser.uid}`);
@@ -1425,9 +1595,9 @@
                 return (
                     <div 
                         className="flex flex-col bg-gray-900 md:rounded-2xl md:border md:border-gray-700 overflow-hidden mx-0 md:mx-4"
-                        style={{ height: 'calc(100dvh - 120px)' }} // Explicit height for active chat
+                        style={{ height: '100%' }} 
                     >
-                        <div className="flex items-center p-4 bg-gray-800 border-b border-gray-700">
+                        <div className="flex items-center p-4 bg-gray-800 border-b border-gray-700 shrink-0">
                             <button onClick={() => setActiveChatUser(null)} className="mr-4 text-gray-400 hover:text-white p-1 rounded-lg hover:bg-gray-700">
                                 <X size={20} />
                             </button>
@@ -1453,7 +1623,7 @@
                             })}
                         </div>
 
-                        <div className="p-3 bg-gray-800 flex gap-2 border-t border-gray-700 pb-safe">
+                        <div className="p-3 bg-gray-800 flex gap-2 border-t border-gray-700 pb-safe shrink-0">
                             <input 
                                 className="flex-1 bg-gray-900 text-white rounded-xl px-4 py-2 outline-none border border-gray-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
                                 placeholder="Type a message..."
@@ -1508,7 +1678,6 @@
             );
         }
 
-        // NotificationsView, Profile, SinglePostView ... (unchanged)
         function NotificationsView({ appUser, onViewPost }) {
             const [notifs, setNotifs] = useState([]);
 
@@ -1696,6 +1865,7 @@
             const [view, setView] = useState('auth'); 
             const [loading, setLoading] = useState(true);
             const [userMap, setUserMap] = useState({});
+            const [directMessageTarget, setDirectMessageTarget] = useState(null);
             
             // Notification Counters
             const [unreadNotifs, setUnreadNotifs] = useState(false);
@@ -1827,8 +1997,17 @@
                 setView('single_post');
             };
 
+            const handleDirectMessage = (targetUsername) => {
+                setDirectMessageTarget(targetUsername);
+                setView('messages');
+            };
+
             const switchView = (newView) => {
                 setView(newView);
+                // Clear direct message target if moving away, though not strictly required
+                if (newView !== 'messages') setDirectMessageTarget(null);
+                
+                // Clear friend badge if opening friends
                 if (newView === 'friends' && appUserProfile) {
                     setHasNewFriendReqs(false);
                     const currentReqs = appUserProfile.friendRequests ? Object.keys(appUserProfile.friendRequests).length : 0;
@@ -1902,9 +2081,9 @@
                             <div className="max-w-2xl mx-auto w-full pb-20 md:pb-8 pt-4 md:pt-8 px-0 md:px-4">
                                 {view === 'home' && <HomeFeed appUser={appUserProfile} onViewProfile={handleViewProfile} userMap={userMap} />}
                                 {view === 'profile' && <Profile appUser={appUserProfile} isMyProfile={true} onViewProfile={handleViewProfile} />}
-                                {view === 'other_profile' && <OtherUserProfile appUser={appUserProfile} targetUser={viewingUser} onBack={() => switchView('home')} />}
+                                {view === 'other_profile' && <OtherUserProfile appUser={appUserProfile} targetUser={viewingUser} onBack={() => switchView('home')} onMessage={handleDirectMessage} />}
                                 {view === 'friends' && <FriendsView appUser={appUserProfile} onViewProfile={handleViewProfile} />}
-                                {view === 'messages' && <MessagesView appUser={appUserProfile} />}
+                                {view === 'messages' && <MessagesView appUser={appUserProfile} initialChatUser={directMessageTarget} />}
                                 {view === 'notifications' && <NotificationsView appUser={appUserProfile} onViewPost={handleViewPost} />}
                                 {view === 'single_post' && <SinglePostView postId={viewingPostId} appUser={appUserProfile} onBack={() => switchView('home')} onViewProfile={handleViewProfile} />}
                             </div>
